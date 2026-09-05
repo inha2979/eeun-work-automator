@@ -435,9 +435,11 @@ elif menu == "🧾 정책 중복 검사":
                         pairs = pairs.sort_values(["유사도", "유형"], ascending=[False, True]).reset_index(drop=True)
 
                     result = pdf.copy().reset_index(drop=True)
-                    result["중복검사_최고유사도"] = ""
-                    result["중복검사_상대행"] = ""
-                    result["중복검사_판정"] = ""
+                    # pandas 3.x에서는 문자열 열에 숫자를 나중에 넣으면 TypeError가 날 수 있으므로
+                    # 처음부터 각 결과 열의 dtype을 명시합니다.
+                    result["중복검사_최고유사도"] = pd.Series(pd.NA, index=result.index, dtype="Float64")
+                    result["중복검사_상대행"] = pd.Series(pd.NA, index=result.index, dtype="Int64")
+                    result["중복검사_판정"] = pd.Series(pd.NA, index=result.index, dtype="string")
 
                     if len(pairs):
                         best = {}

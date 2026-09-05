@@ -165,7 +165,7 @@ st.caption("반복적인 이벤트/엑셀 업무를 빠르게 정리하는 로�
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "✉️ 업무 보고/메일 생성기", "🎁 Event Lottery"],
+    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "📚 다중 엑셀 통합기", "✅ 파일 납품 전 체크기", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "✉️ 업무 보고/메일 생성기", "🎁 Event Lottery"],
 )
 
 
@@ -297,6 +297,303 @@ elif menu == "🔗 Excel Matcher":
                 st.dataframe(merged.head(100), width="stretch")
                 xbytes = to_excel_bytes({"matched": merged, "missing": missing})
                 st.download_button("📥 matched_result.xlsx", xbytes, "matched_result.xlsx")
+
+
+
+# -----------------------------
+# Multi Excel Merger
+# -----------------------------
+elif menu == "📚 다중 엑셀 통합기":
+    st.header("📚 다중 엑셀 통합기")
+    st.write("여러 Excel/CSV 파일을 한 번에 업로드해 하나의 통합 파일로 합칩니다.")
+
+    uploaded_files = st.file_uploader(
+        "합칠 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+        help="여러 파일을 동시에 선택할 수 있습니다.",
+    )
+
+    if uploaded_files:
+        st.caption(f"업로드된 파일: {len(uploaded_files)}개")
+
+        merge_mode = st.radio(
+            "통합 방식",
+            ["열 이름 기준으로 이어붙이기", "공통 열만 남겨 이어붙이기"],
+            horizontal=True,
+            help="열 이름 기준: 없는 열은 빈칸으로 채웁니다. / 공통 열만: 모든 파일에 공통으로 존재하는 열만 남깁니다.",
+        )
+
+        add_source = st.checkbox(
+            "원본 파일명 열 추가",
+            value=True,
+            help="통합 결과에 각 행이 어느 파일에서 왔는지 '원본파일' 열로 표시합니다.",
+        )
+
+        sheet_choice = st.selectbox(
+            "Excel 시트 처리 방식",
+            ["각 파일의 첫 번째 시트만", "모든 시트 합치기"],
+            help="CSV는 시트가 없으므로 그대로 처리됩니다.",
+        )
+
+        if st.button("🔗 파일 통합 실행", type="primary", width="stretch"):
+            frames = []
+            summary_rows = []
+            errors = []
+
+            for uf in uploaded_files:
+                try:
+                    name = uf.name
+                    suffix = name.lower().split(".")[-1]
+
+                    if suffix == "csv":
+                        try:
+                            df = pd.read_csv(uf)
+                        except UnicodeDecodeError:
+                            uf.seek(0)
+                            df = pd.read_csv(uf, encoding="cp949")
+
+                        if add_source:
+                            df.insert(0, "원본파일", name)
+
+                        frames.append(df)
+                        summary_rows.append({
+                            "파일명": name,
+                            "시트": "-",
+                            "행 수": len(df),
+                            "열 수": len(df.columns),
+                        })
+                    else:
+                        uf.seek(0)
+                        xls = pd.ExcelFile(uf)
+                        target_sheets = [xls.sheet_names[0]] if sheet_choice == "각 파일의 첫 번째 시트만" else xls.sheet_names
+
+                        for sh in target_sheets:
+                            df = pd.read_excel(xls, sheet_name=sh)
+                            if add_source:
+                                df.insert(0, "원본파일", name)
+                                if sheet_choice == "모든 시트 합치기":
+                                    df.insert(1, "원본시트", sh)
+
+                            frames.append(df)
+                            summary_rows.append({
+                                "파일명": name,
+                                "시트": sh,
+                                "행 수": len(df),
+                                "열 수": len(df.columns),
+                            })
+                except Exception as e:
+                    errors.append(f"{uf.name}: {e}")
+
+            if frames:
+                if merge_mode == "공통 열만 남겨 이어붙이기":
+                    common = set(frames[0].columns)
+                    for df in frames[1:]:
+                        common &= set(df.columns)
+
+                    # Preserve first file's column order
+                    ordered_common = [c for c in frames[0].columns if c in common]
+                    merged = pd.concat([df[ordered_common] for df in frames], ignore_index=True)
+                else:
+                    merged = pd.concat(frames, ignore_index=True, sort=False)
+
+                st.success(f"총 {len(frames)}개 파일/시트를 합쳐 {len(merged):,}행으로 통합했습니다.")
+
+                with st.expander("📊 파일별 통합 요약", expanded=True):
+                    st.dataframe(pd.DataFrame(summary_rows), width="stretch")
+
+                st.markdown("#### 통합 결과 미리보기")
+                st.dataframe(merged.head(100), width="stretch")
+
+                if errors:
+                    st.warning("일부 파일은 처리하지 못했습니다.")
+                    for err in errors:
+                        st.write(f"- {err}")
+
+                output = BytesIO()
+                with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                    merged.to_excel(writer, index=False, sheet_name="통합결과")
+                    pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="통합요약")
+                    if errors:
+                        pd.DataFrame({"오류": errors}).to_excel(writer, index=False, sheet_name="오류")
+                output.seek(0)
+
+                st.download_button(
+                    "⬇️ 통합 Excel 다운로드",
+                    data=output.getvalue(),
+                    file_name="다중엑셀_통합결과.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
+            else:
+                st.error("통합할 수 있는 파일이 없습니다.")
+
+
+# -----------------------------
+# Pre-delivery File Checker
+# -----------------------------
+elif menu == "✅ 파일 납품 전 체크기":
+    st.header("✅ 파일 납품 전 체크기")
+    st.write("전달하기 전 Excel/CSV 파일의 누락·중복·빈칸·전화번호·필수 열 등을 빠르게 점검합니다.")
+
+    check_file = st.file_uploader(
+        "검수할 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="delivery_check_file",
+    )
+
+    if check_file:
+        # Load file
+        suffix = check_file.name.lower().split(".")[-1]
+        if suffix == "csv":
+            try:
+                cdf = pd.read_csv(check_file)
+            except UnicodeDecodeError:
+                check_file.seek(0)
+                cdf = pd.read_csv(check_file, encoding="cp949")
+            selected_sheet = "-"
+        else:
+            check_file.seek(0)
+            xls = pd.ExcelFile(check_file)
+            selected_sheet = st.selectbox("검수할 시트", xls.sheet_names)
+            cdf = pd.read_excel(xls, sheet_name=selected_sheet)
+
+        st.caption(f"현재 파일: {check_file.name} / {len(cdf):,}행 × {len(cdf.columns)}열")
+
+        all_cols = list(cdf.columns)
+
+        st.markdown("### 검수 조건")
+        c1, c2 = st.columns(2)
+        with c1:
+            required_cols_text = st.text_input(
+                "반드시 있어야 하는 열 (선택)",
+                placeholder="예: 이름,전화번호,인스타그램ID",
+                help="쉼표(,)로 구분하세요.",
+            )
+            required_value_cols = st.multiselect(
+                "빈칸이 있으면 안 되는 열 (선택)",
+                all_cols,
+                help="선택한 열에서 빈 셀이 있으면 오류로 표시합니다.",
+            )
+            duplicate_cols = st.multiselect(
+                "중복 검사 기준 열 (선택)",
+                all_cols,
+                help="예: 전화번호 또는 Instagram ID",
+            )
+        with c2:
+            phone_col = st.selectbox(
+                "전화번호 형식 검사 열 (선택)",
+                ["선택 안 함"] + all_cols,
+                help="숫자 10~11자리 기준으로 형식을 확인합니다.",
+            )
+            id_col = st.selectbox(
+                "Instagram ID 형식 검사 열 (선택)",
+                ["선택 안 함"] + all_cols,
+                help="@, URL, 공백이 섞여 있는 값을 확인합니다.",
+            )
+            check_blank_rows = st.checkbox("완전히 빈 행 검사", value=True)
+
+        if st.button("🔍 납품 전 검수 실행", type="primary", width="stretch"):
+            issues = []
+            row_issues = pd.DataFrame(index=cdf.index)
+            row_issues["검수결과"] = ""
+            row_issues["문제내용"] = ""
+
+            def add_row_issue(mask, msg):
+                nonlocal row_issues
+                if mask.any():
+                    idxs = row_issues.index[mask]
+                    for idx in idxs:
+                        current = row_issues.at[idx, "문제내용"]
+                        row_issues.at[idx, "문제내용"] = f"{current}; {msg}".strip("; ")
+                        row_issues.at[idx, "검수결과"] = "확인필요"
+
+            # Required columns
+            required_cols = [x.strip() for x in required_cols_text.split(",") if x.strip()]
+            missing_cols = [c for c in required_cols if c not in all_cols]
+            if missing_cols:
+                issues.append(("필수 열 누락", f"{', '.join(missing_cols)}"))
+
+            # Blank required values
+            for col in required_value_cols:
+                mask = cdf[col].isna() | (cdf[col].astype(str).str.strip() == "")
+                count = int(mask.sum())
+                if count:
+                    issues.append((f"빈칸 - {col}", f"{count}건"))
+                    add_row_issue(mask, f"{col} 빈칸")
+
+            # Duplicates
+            if duplicate_cols:
+                dup_mask = cdf.duplicated(subset=duplicate_cols, keep=False)
+                dup_count = int(dup_mask.sum())
+                if dup_count:
+                    issues.append(("중복값", f"{dup_count}행"))
+                    add_row_issue(dup_mask, f"{', '.join(duplicate_cols)} 기준 중복")
+
+            # Phone
+            if phone_col != "선택 안 함":
+                phone_digits = cdf[phone_col].astype(str).str.replace(r"\D", "", regex=True)
+                phone_mask = ~phone_digits.str.len().isin([10, 11]) & cdf[phone_col].notna()
+                phone_count = int(phone_mask.sum())
+                if phone_count:
+                    issues.append(("전화번호 형식", f"{phone_count}건"))
+                    add_row_issue(phone_mask, f"{phone_col} 전화번호 형식 확인")
+
+            # Instagram
+            if id_col != "선택 안 함":
+                ids = cdf[id_col].astype(str)
+                ig_mask = (
+                    ids.str.contains(r"https?://|instagram\.com|@", case=False, regex=True, na=False)
+                    | ids.str.contains(r"\s", regex=True, na=False)
+                )
+                ig_count = int(ig_mask.sum())
+                if ig_count:
+                    issues.append(("Instagram ID 형식", f"{ig_count}건"))
+                    add_row_issue(ig_mask, f"{id_col} 형식 확인")
+
+            # Completely blank rows
+            if check_blank_rows:
+                blank_row_mask = cdf.isna().all(axis=1)
+                blank_count = int(blank_row_mask.sum())
+                if blank_count:
+                    issues.append(("완전히 빈 행", f"{blank_count}행"))
+                    add_row_issue(blank_row_mask, "완전히 빈 행")
+
+            result_df = cdf.copy()
+            result_df.insert(0, "검수결과", row_issues["검수결과"].replace("", "정상"))
+            result_df.insert(1, "문제내용", row_issues["문제내용"])
+
+            if not issues:
+                st.success("✅ 현재 설정 기준으로 발견된 문제가 없습니다. 전달 전 최종 육안 확인만 해주세요.")
+            else:
+                st.warning(f"⚠️ 확인이 필요한 항목이 {len(issues)}종류 발견됐습니다.")
+                st.dataframe(
+                    pd.DataFrame(issues, columns=["검사항목", "결과"]),
+                    width="stretch",
+                )
+
+            issue_rows = result_df[result_df["검수결과"] == "확인필요"]
+            st.markdown("#### 확인이 필요한 행")
+            if len(issue_rows):
+                st.dataframe(issue_rows, width="stretch")
+            else:
+                st.info("행 단위로 확인할 문제는 없습니다.")
+
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                result_df.to_excel(writer, index=False, sheet_name="검수결과")
+                pd.DataFrame(issues, columns=["검사항목", "결과"]).to_excel(
+                    writer, index=False, sheet_name="검수요약"
+                )
+            output.seek(0)
+
+            st.download_button(
+                "⬇️ 검수 결과 Excel 다운로드",
+                data=output.getvalue(),
+                file_name="파일_납품전_검수결과.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
 
 
 # -----------------------------

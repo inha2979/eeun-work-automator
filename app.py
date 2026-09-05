@@ -165,7 +165,7 @@ st.caption("반복적인 이벤트/엑셀 업무를 빠르게 정리하는 로�
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "🎁 Event Lottery"],
+    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "✉️ 업무 보고/메일 생성기", "🎁 Event Lottery"],
 )
 
 
@@ -579,6 +579,196 @@ elif menu == "📚 이은북 카드뉴스 기획안":
                 "📄 프롬프트 TXT로 저장",
                 data=prompt.encode("utf-8"),
                 file_name=f"{book_title.strip()}_카드뉴스_기획_프롬프트.txt",
+                mime="text/plain",
+                width="stretch",
+            )
+
+
+# -----------------------------
+# Work Report / Email Generator
+# -----------------------------
+elif menu == "✉️ 업무 보고/메일 생성기":
+    st.header("✉️ 업무 보고/메일 생성기")
+    st.write("완료한 업무와 전달할 내용을 입력하면 메일·카톡 보고 문장을 바로 만들어줍니다.")
+
+    report_type = st.radio(
+        "만들 문서",
+        ["📧 이메일", "💬 카카오톡/메신저", "📝 짧은 업무 보고"],
+        horizontal=True,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        recipient = st.selectbox(
+            "받는 사람",
+            ["팀장님", "차장님", "선배님", "사장님", "담당자님", "직접 입력"],
+        )
+        if recipient == "직접 입력":
+            recipient_custom = st.text_input("호칭 직접 입력", placeholder="예: 부장님")
+            recipient_text = recipient_custom.strip() or "담당자님"
+        else:
+            recipient_text = recipient
+
+        sender = st.text_input(
+            "보내는 사람",
+            value="김인하 인턴",
+            help="이메일 서명에 사용할 이름/직함입니다.",
+        )
+
+    with c2:
+        subject = st.text_input(
+            "메일 제목 (선택)",
+            placeholder="예: [맘앤톡] 온리원 이벤트 당첨자 파일 전달드립니다",
+            help="이메일 선택 시 제목 추천에 사용합니다.",
+        )
+        tone = st.selectbox(
+            "톤",
+            ["공손하고 간결하게", "조금 더 부드럽게", "아주 짧게", "진행상황 중심"],
+        )
+
+    task_name = st.text_input(
+        "업무명",
+        placeholder="예: 맘앤톡 온리원 이벤트 당첨자 정리 / AI 인물편집 교정",
+    )
+
+    completed = st.text_area(
+        "완료한 내용",
+        height=120,
+        placeholder="예: 전체 참여자 검토 후 중복·미동의자를 제외하고 최종 추첨을 완료했습니다.",
+    )
+
+    attachments = st.text_area(
+        "첨부/전달 파일 (선택)",
+        height=85,
+        placeholder="예: 당첨자 목록.xlsx, 추첨 영상.mp4",
+    )
+
+    remaining = st.text_area(
+        "남은 업무 / 다음 진행사항 (선택)",
+        height=90,
+        placeholder="예: 나머지 2건은 월요일에 마무리할 예정입니다.",
+    )
+
+    request_text = st.text_area(
+        "확인 요청 / 질문 (선택)",
+        height=90,
+        placeholder="예: 확인 부탁드립니다. / 예약 발행으로 진행해도 될지 확인 부탁드립니다.",
+    )
+
+    deadline = st.text_input(
+        "일정/기한 (선택)",
+        placeholder="예: 월요일 오전까지 / 오늘 중 / 9월 8일까지",
+    )
+
+    if st.button("✨ 보고 문장 만들기", type="primary", width="stretch"):
+        task = task_name.strip()
+        done = completed.strip()
+        attach = attachments.strip()
+        remain = remaining.strip()
+        req = request_text.strip()
+        due = deadline.strip()
+
+        if not task:
+            st.error("업무명을 입력해주세요.")
+        elif not done:
+            st.error("완료한 내용을 입력해주세요.")
+        else:
+            # Normalize ending punctuation lightly
+            def end_sentence(s):
+                s = s.strip()
+                if not s:
+                    return ""
+                return s if s[-1] in ".!?요다" else s + "."
+
+            done_s = end_sentence(done)
+            remain_s = end_sentence(remain)
+            req_s = end_sentence(req)
+
+            if tone == "아주 짧게":
+                intro_done = f"{task} 관련하여 {done_s}"
+            elif tone == "진행상황 중심":
+                intro_done = f"{task} 진행 상황 공유드립니다.\n\n현재 {done_s}"
+            else:
+                intro_done = f"{task} 관련하여 {done_s}"
+
+            if report_type == "📧 이메일":
+                if subject.strip():
+                    subject_line = subject.strip()
+                else:
+                    subject_line = f"[{task}] 작업 결과 전달드립니다"
+
+                body_parts = [
+                    f"{recipient_text}, 안녕하세요.",
+                    f"{sender}입니다.",
+                    "",
+                    intro_done,
+                ]
+
+                if attach:
+                    body_parts += ["", f"관련 파일은 아래와 같이 함께 전달드립니다.\n{attach}"]
+
+                if remain:
+                    remain_line = remain_s
+                    if due and due not in remain_line:
+                        remain_line = f"{remain_line} 일정은 {due}입니다."
+                    body_parts += ["", remain_line]
+                elif due:
+                    body_parts += ["", f"관련 일정은 {due}입니다."]
+
+                if req:
+                    body_parts += ["", req_s]
+                else:
+                    body_parts += ["", "확인 부탁드립니다."]
+
+                body_parts += ["", "감사합니다.", f"{sender.split()[0] if sender.strip() else '김인하'} 드림"]
+
+                generated = "\n".join(body_parts)
+
+                st.markdown("#### 추천 메일 제목")
+                st.code(subject_line, language=None)
+                st.markdown("#### 메일 본문")
+                st.text_area("복사용 메일", generated, height=360)
+
+            elif report_type == "💬 카카오톡/메신저":
+                parts = [f"{recipient_text}, 안녕하세요!"]
+                parts.append(intro_done)
+
+                if attach:
+                    parts.append(f"관련 파일도 함께 전달드렸습니다: {attach}")
+                if remain:
+                    line = remain_s
+                    if due and due not in line:
+                        line += f" 일정은 {due}입니다."
+                    parts.append(line)
+                elif due:
+                    parts.append(f"관련 일정은 {due}입니다.")
+
+                if req:
+                    parts.append(req_s)
+                else:
+                    parts.append("확인 부탁드립니다. 감사합니다!")
+
+                generated = "\n\n".join(parts)
+                st.text_area("복사용 메신저 문장", generated, height=280)
+
+            else:
+                parts = [f"{task}: {done_s}"]
+                if attach:
+                    parts.append(f"전달 파일: {attach}")
+                if remain:
+                    parts.append(f"남은 업무: {remain_s}")
+                if due:
+                    parts.append(f"일정: {due}")
+                if req:
+                    parts.append(f"확인 요청: {req_s}")
+
+                generated = "\n".join(parts)
+                st.text_area("복사용 업무 보고", generated, height=230)
+
+            st.download_button(
+                "📄 문장 TXT로 저장",
+                data=generated.encode("utf-8"),
+                file_name="업무보고_문장.txt",
                 mime="text/plain",
                 width="stretch",
             )

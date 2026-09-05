@@ -1,6 +1,7 @@
 import io
 import re
 import hashlib
+from difflib import SequenceMatcher
 from datetime import datetime
 
 import pandas as pd
@@ -164,7 +165,7 @@ st.caption("반복적인 이벤트/엑셀 업무를 빠르게 정리하는 로�
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🎁 Event Lottery"],
+    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "🎁 Event Lottery"],
 )
 
 
@@ -180,7 +181,7 @@ if menu == "🧹 Excel Cleaner":
         df = flexible_loader(file, "cleaner", "파일 구조")
         if df is not None:
             st.subheader("미리보기")
-            st.dataframe(df.head(30), use_container_width=True)
+            st.dataframe(df.head(30), width="stretch")
 
             cols = list(df.columns)
             phone_guess = auto_col(df, ["전화번호", "휴대폰", "핸드폰", "phone", "mobile", "연락처"])
@@ -242,8 +243,8 @@ if menu == "🧹 Excel Cleaner":
                     "개수": [len(df), len(out), int(dup_mask.sum())],
                 })
                 st.success("정리 완료")
-                st.dataframe(summary, use_container_width=True)
-                st.dataframe(out.head(100), use_container_width=True)
+                st.dataframe(summary, width="stretch")
+                st.dataframe(out.head(100), width="stretch")
                 xbytes = to_excel_bytes({"cleaned": out, "summary": summary})
                 st.download_button("📥 cleaned_result.xlsx", xbytes, "cleaned_result.xlsx")
 
@@ -264,12 +265,12 @@ elif menu == "🔗 Excel Matcher":
             c1, c2 = st.columns(2)
             with c1:
                 st.caption("기준 파일")
-                st.dataframe(ldf.head(20), use_container_width=True)
+                st.dataframe(ldf.head(20), width="stretch")
                 lguess = auto_col(ldf, ["instagram", "인스타", "아이디", "id", "계정"], list(ldf.columns)[0])
                 lkey = st.selectbox("기준 파일 매칭 열", list(ldf.columns), index=option_index(list(ldf.columns), lguess), key="lkey")
             with c2:
                 st.caption("정보 파일")
-                st.dataframe(rdf.head(20), use_container_width=True)
+                st.dataframe(rdf.head(20), width="stretch")
                 rguess = auto_col(rdf, ["instagram", "인스타", "아이디", "id", "계정"], list(rdf.columns)[0])
                 rkey = st.selectbox("정보 파일 매칭 열", list(rdf.columns), index=option_index(list(rdf.columns), rguess), key="rkey")
 
@@ -293,9 +294,195 @@ elif menu == "🔗 Excel Matcher":
                 merged = merged.drop(columns=[lk, "_merge"])
                 missing = merged[merged["매칭상태"] == "정보 없음"]
                 st.success(f"매칭 완료: {len(merged)-len(missing)}건 / 정보 없음 {len(missing)}건")
-                st.dataframe(merged.head(100), use_container_width=True)
+                st.dataframe(merged.head(100), width="stretch")
                 xbytes = to_excel_bytes({"matched": merged, "missing": missing})
                 st.download_button("📥 matched_result.xlsx", xbytes, "matched_result.xlsx")
+
+
+# -----------------------------
+# Policy Duplicate Checker
+# -----------------------------
+elif menu == "🧾 정책 중복 검사":
+    st.header("정책 중복 검사")
+    st.write("공모전·정책 제안 엑셀에서 완전 중복과 유사한 내용을 찾아 비교표로 정리합니다.")
+    st.caption("엑셀 구조가 달라도 시트와 헤더 행, 제목/본문 열을 직접 선택할 수 있습니다.")
+
+    policy_file = st.file_uploader(
+        "정책/공모전 제안 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="policy_duplicate",
+    )
+
+    if policy_file:
+        pdf = flexible_loader(policy_file, "policy_duplicate", "파일 구조")
+        if pdf is not None and len(pdf.columns):
+            st.subheader("미리보기")
+            st.dataframe(pdf.head(30), width="stretch")
+            pcols = list(pdf.columns)
+
+            id_guess = auto_col(pdf, ["접수번호", "제안번호", "번호", "id", "no"], "선택 안 함")
+            title_guess = auto_col(pdf, ["정책명", "제안명", "제목", "아이디어명", "공모명", "title"], "선택 안 함")
+            body_candidates = find_candidate_columns(
+                pdf,
+                ["정책내용", "제안내용", "내용", "상세", "설명", "필요성", "배경", "목적", "기대효과", "body", "description"],
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                id_options = ["선택 안 함"] + pcols
+                id_col = st.selectbox(
+                    "식별용 열 (선택)",
+                    id_options,
+                    index=option_index(id_options, id_guess),
+                    help="접수번호 등이 있으면 결과표에 함께 표시합니다.",
+                )
+                title_options = ["선택 안 함"] + pcols
+                title_col = st.selectbox(
+                    "제목 열 (선택)",
+                    title_options,
+                    index=option_index(title_options, title_guess),
+                )
+            with c2:
+                default_bodies = body_candidates[:2]
+                body_cols = st.multiselect(
+                    "비교할 내용 열",
+                    pcols,
+                    default=default_bodies,
+                    help="정책 내용, 필요성, 기대효과 등 여러 열을 동시에 선택할 수 있습니다.",
+                )
+                threshold = st.slider(
+                    "유사 중복 기준",
+                    min_value=0.60,
+                    max_value=1.00,
+                    value=0.78,
+                    step=0.01,
+                    help="0.78이면 문장 표현이 일부 달라도 상당히 유사한 제안을 후보로 표시합니다.",
+                )
+
+            include_title = st.checkbox("제목도 유사도 계산에 포함", value=True)
+            ignore_short = st.number_input(
+                "너무 짧은 내용 제외 (최소 글자 수)",
+                min_value=0,
+                max_value=500,
+                value=20,
+                step=5,
+            )
+
+            selected_cols = list(body_cols)
+            if include_title and title_col != "선택 안 함":
+                selected_cols = [title_col] + selected_cols
+
+            if not selected_cols:
+                st.warning("제목 열 또는 비교할 내용 열을 하나 이상 선택해주세요.")
+            else:
+                if len(pdf) > 1500:
+                    st.warning("행이 1,500개를 넘으면 유사도 비교에 시간이 걸릴 수 있습니다. 먼저 필요한 행만 필터링하면 더 빠릅니다.")
+
+                def normalize_policy_text(value):
+                    text = normalize_text(value).lower()
+                    text = re.sub(r"\s+", " ", text)
+                    text = re.sub(r"[^0-9a-zA-Z가-힣 ]", "", text)
+                    return text.strip()
+
+                def row_policy_text(row):
+                    parts = [normalize_text(row.get(c, "")) for c in selected_cols]
+                    return normalize_policy_text(" ".join(p for p in parts if p))
+
+                if st.button("중복 검사 실행", type="primary"):
+                    work = pdf.copy().reset_index(drop=True)
+                    work["__source_row"] = work.index + 2
+                    work["__compare_text"] = work.apply(row_policy_text, axis=1)
+                    work["__text_len"] = work["__compare_text"].str.len()
+                    valid = work[work["__text_len"] >= int(ignore_short)].copy()
+
+                    exact_map = {}
+                    for idx, text in valid["__compare_text"].items():
+                        exact_map.setdefault(text, []).append(idx)
+                    pair_rows = []
+                    indices = list(valid.index)
+                    for pos, i in enumerate(indices):
+                        a = valid.at[i, "__compare_text"]
+                        la = len(a)
+                        for j in indices[pos + 1:]:
+                            b = valid.at[j, "__compare_text"]
+                            lb = len(b)
+                            if not a or not b:
+                                continue
+                            # Very different lengths are unlikely to be meaningful duplicates.
+                            if min(la, lb) / max(la, lb) < 0.45:
+                                continue
+                            exact = a == b
+                            score = 1.0 if exact else SequenceMatcher(None, a, b, autojunk=False).ratio()
+                            if score >= threshold:
+                                row = {
+                                    "유형": "완전중복" if exact else "유사중복",
+                                    "유사도": round(score * 100, 1),
+                                    "A_엑셀행": int(work.at[i, "__source_row"]),
+                                    "B_엑셀행": int(work.at[j, "__source_row"]),
+                                }
+                                if id_col != "선택 안 함":
+                                    row["A_ID"] = work.at[i, id_col]
+                                    row["B_ID"] = work.at[j, id_col]
+                                if title_col != "선택 안 함":
+                                    row["A_제목"] = work.at[i, title_col]
+                                    row["B_제목"] = work.at[j, title_col]
+                                row["A_내용미리보기"] = " ".join(str(work.at[i, c]) for c in selected_cols if not pd.isna(work.at[i, c]))[:300]
+                                row["B_내용미리보기"] = " ".join(str(work.at[j, c]) for c in selected_cols if not pd.isna(work.at[j, c]))[:300]
+                                pair_rows.append(row)
+
+                    pairs = pd.DataFrame(pair_rows)
+                    if len(pairs):
+                        pairs = pairs.sort_values(["유사도", "유형"], ascending=[False, True]).reset_index(drop=True)
+
+                    result = pdf.copy().reset_index(drop=True)
+                    result["중복검사_최고유사도"] = ""
+                    result["중복검사_상대행"] = ""
+                    result["중복검사_판정"] = ""
+
+                    if len(pairs):
+                        best = {}
+                        for _, r in pairs.iterrows():
+                            aidx = int(r["A_엑셀행"]) - 2
+                            bidx = int(r["B_엑셀행"]) - 2
+                            score = float(r["유사도"])
+                            typ = r["유형"]
+                            if aidx not in best or score > best[aidx][0]:
+                                best[aidx] = (score, int(r["B_엑셀행"]), typ)
+                            if bidx not in best or score > best[bidx][0]:
+                                best[bidx] = (score, int(r["A_엑셀행"]), typ)
+                        for idx, (score, other_row, typ) in best.items():
+                            result.at[idx, "중복검사_최고유사도"] = score
+                            result.at[idx, "중복검사_상대행"] = other_row
+                            result.at[idx, "중복검사_판정"] = typ
+
+                    exact_pairs = pairs[pairs["유형"] == "완전중복"].copy() if len(pairs) else pd.DataFrame()
+                    similar_pairs = pairs[pairs["유형"] == "유사중복"].copy() if len(pairs) else pd.DataFrame()
+                    summary = pd.DataFrame({
+                        "항목": ["전체 제안", "비교 대상", "완전 중복 쌍", "유사 중복 쌍", "유사도 기준"],
+                        "값": [len(pdf), len(valid), len(exact_pairs), len(similar_pairs), f"{threshold*100:.0f}% 이상"],
+                    })
+
+                    st.success(f"검사 완료 — 완전 중복 {len(exact_pairs)}쌍 / 유사 중복 {len(similar_pairs)}쌍")
+                    st.dataframe(summary, width="stretch")
+                    st.subheader("중복 의심 쌍")
+                    if len(pairs):
+                        st.dataframe(pairs, width="stretch")
+                    else:
+                        st.info("현재 기준에서는 중복 또는 유사 중복 후보가 발견되지 않았습니다.")
+
+                    settings = pd.DataFrame({
+                        "항목": ["식별 열", "제목 열", "비교 열", "제목 포함", "유사도 기준", "최소 글자 수"],
+                        "값": [id_col, title_col, ", ".join(map(str, body_cols)), include_title, threshold, int(ignore_short)],
+                    })
+                    xbytes = to_excel_bytes({
+                        "검사결과": result,
+                        "중복의심쌍": pairs,
+                        "완전중복": exact_pairs,
+                        "유사중복": similar_pairs,
+                        "요약": summary,
+                        "검사설정": settings,
+                    })
+                    st.download_button("📥 policy_duplicate_result.xlsx", xbytes, "policy_duplicate_result.xlsx")
 
 
 # -----------------------------
@@ -312,7 +499,7 @@ else:
     if participants_file:
         pdf = flexible_loader(participants_file, "lottery_participants", "참여자 파일 구조")
         if pdf is not None:
-            st.dataframe(pdf.head(25), use_container_width=True)
+            st.dataframe(pdf.head(25), width="stretch")
             pcols = list(pdf.columns)
 
             likely_id = find_candidate_columns(pdf, ["instagram", "인스타", "아이디", "id", "계정", "sns"])
@@ -438,7 +625,7 @@ else:
                 total_needed = int(winner_count + reserve_count)
 
                 st.subheader("추첨 대상 정리 결과")
-                st.dataframe(summary, use_container_width=True)
+                st.dataframe(summary, width="stretch")
 
                 excluded_counts = summary.iloc[1:][["단계", "제외"]]
                 parts = [f"{row['단계']} {int(row['제외'])}명" for _, row in excluded_counts.iterrows() if int(row["제외"]) > 0]
@@ -469,15 +656,15 @@ else:
 
                     st.success(f"추첨 완료 — 최종 대상 {eligible_n}명")
                     st.subheader("당첨자")
-                    st.dataframe(winners.reset_index(drop=True), use_container_width=True)
+                    st.dataframe(winners.reset_index(drop=True), width="stretch")
                     st.subheader("예비 당첨자")
                     if len(reserves):
-                        st.dataframe(reserves.reset_index(drop=True), use_container_width=True)
+                        st.dataframe(reserves.reset_index(drop=True), width="stretch")
                     else:
                         st.caption("예비 당첨자 수를 0명으로 설정했습니다.")
 
                     with st.expander("제외 대상 및 제외 사유 보기"):
-                        st.dataframe(excluded, use_container_width=True)
+                        st.dataframe(excluded, width="stretch")
 
                     xbytes = to_excel_bytes({
                         "당첨자": winners,

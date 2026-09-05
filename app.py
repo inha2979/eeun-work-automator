@@ -1,6 +1,7 @@
 import io
 import re
 import hashlib
+import zipfile
 from difflib import SequenceMatcher
 from datetime import datetime
 
@@ -51,7 +52,7 @@ def normalize_phone(value, output_format="digits"):
 
 
 def to_excel_bytes(sheets):
-    output = io.io.BytesIO()
+    output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, df in sheets.items():
             safe = re.sub(r"[\\/*?:\[\]]", "_", name)[:31]
@@ -165,7 +166,7 @@ st.caption("반복적인 이벤트/엑셀 업무를 빠르게 정리하는 로�
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "📚 다중 엑셀 통합기", "✅ 파일 납품 전 체크기", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "✉️ 업무 보고/메일 생성기", "🎁 Event Lottery"],
+    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "📚 다중 엑셀 통합기", "🧩 두 파일 차이 비교기", "✂️ 파일 자동 분리기", "🔗 여러 파일 VLOOKUP/XLOOKUP", "📦 제출용 파일 자동 생성기", "📈 피벗 요약 자동 생성기", "✅ 파일 납품 전 체크기", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "✉️ 업무 보고/메일 생성기", "🎁 Event Lottery"],
 )
 
 
@@ -427,6 +428,738 @@ elif menu == "📚 다중 엑셀 통합기":
                 )
             else:
                 st.error("통합할 수 있는 파일이 없습니다.")
+
+
+
+# -----------------------------
+# Two-file Difference Comparator
+# -----------------------------
+elif menu == "🧩 두 파일 차이 비교기":
+    st.header("🧩 두 파일 차이 비교기")
+    st.write("이전 파일과 수정 파일을 비교해 추가·삭제·변경된 행을 찾아줍니다.")
+
+    old_file = st.file_uploader(
+        "① 이전 파일",
+        type=["xlsx", "xls", "csv"],
+        key="diff_old_file",
+    )
+    new_file = st.file_uploader(
+        "② 새 파일 / 수정본",
+        type=["xlsx", "xls", "csv"],
+        key="diff_new_file",
+    )
+
+    if old_file and new_file:
+        old_df = flexible_loader(old_file, "diff_old", "이전 파일 구조")
+        new_df = flexible_loader(new_file, "diff_new", "새 파일 구조")
+
+        if old_df is not None and new_df is not None and len(old_df.columns) and len(new_df.columns):
+            c1, c2 = st.columns(2)
+            with c1:
+                old_cols = list(old_df.columns)
+                old_guess = auto_col(old_df, ["접수번호", "id", "아이디", "번호", "전화번호", "인스타"], old_cols[0])
+                old_key = st.selectbox(
+                    "이전 파일의 기준 열",
+                    old_cols,
+                    index=option_index(old_cols, old_guess),
+                    key="diff_old_key",
+                )
+            with c2:
+                new_cols = list(new_df.columns)
+                new_guess = auto_col(new_df, ["접수번호", "id", "아이디", "번호", "전화번호", "인스타"], new_cols[0])
+                new_key = st.selectbox(
+                    "새 파일의 기준 열",
+                    new_cols,
+                    index=option_index(new_cols, new_guess),
+                    key="diff_new_key",
+                )
+
+            key_normalize = st.selectbox(
+                "기준값 정리 방식",
+                ["공백만 정리", "Instagram ID 형식", "전화번호 숫자만"],
+                help="두 파일에서 같은 사람/항목을 찾기 위한 기준값을 어떻게 맞출지 선택합니다.",
+            )
+
+            common_cols = [c for c in old_cols if c in new_cols and c not in {old_key, new_key}]
+            compare_cols = st.multiselect(
+                "값 변경을 비교할 열",
+                common_cols,
+                default=common_cols,
+                help="두 파일에 동일한 열 이름으로 존재하는 항목만 선택할 수 있습니다.",
+            )
+
+            if st.button("🔍 차이 비교 실행", type="primary", width="stretch"):
+                O = old_df.copy()
+                N = new_df.copy()
+
+                def make_diff_key(series):
+                    if key_normalize == "Instagram ID 형식":
+                        return series.map(normalize_instagram_id)
+                    if key_normalize == "전화번호 숫자만":
+                        return series.map(lambda x: normalize_phone(x, "digits"))
+                    return series.map(normalize_text)
+
+                O["__compare_key__"] = make_diff_key(O[old_key])
+                N["__compare_key__"] = make_diff_key(N[new_key])
+
+                O = O[O["__compare_key__"] != ""].copy()
+                N = N[N["__compare_key__"] != ""].copy()
+
+                old_dup_count = int(O.duplicated("__compare_key__", keep=False).sum())
+                new_dup_count = int(N.duplicated("__compare_key__", keep=False).sum())
+                if old_dup_count or new_dup_count:
+                    st.warning(
+                        f"기준값 중복이 있습니다. 이전 파일 {old_dup_count}행, 새 파일 {new_dup_count}행. "
+                        "비교에서는 각 기준값의 첫 번째 행을 사용합니다."
+                    )
+
+                O = O.drop_duplicates("__compare_key__", keep="first").set_index("__compare_key__")
+                N = N.drop_duplicates("__compare_key__", keep="first").set_index("__compare_key__")
+
+                old_keys = set(O.index)
+                new_keys = set(N.index)
+                added_keys = sorted(new_keys - old_keys)
+                removed_keys = sorted(old_keys - new_keys)
+                shared_keys = sorted(old_keys & new_keys)
+
+                added = N.loc[added_keys].reset_index() if added_keys else pd.DataFrame(columns=["__compare_key__"] + list(N.columns))
+                removed = O.loc[removed_keys].reset_index() if removed_keys else pd.DataFrame(columns=["__compare_key__"] + list(O.columns))
+
+                changed_rows = []
+                unchanged_keys = []
+
+                for key in shared_keys:
+                    changes = []
+                    for col in compare_cols:
+                        old_val = normalize_text(O.at[key, col]) if col in O.columns else ""
+                        new_val = normalize_text(N.at[key, col]) if col in N.columns else ""
+                        if old_val != new_val:
+                            changes.append({
+                                "기준값": key,
+                                "변경열": col,
+                                "이전값": old_val,
+                                "새값": new_val,
+                            })
+                    if changes:
+                        changed_rows.extend(changes)
+                    else:
+                        unchanged_keys.append(key)
+
+                changed = pd.DataFrame(
+                    changed_rows,
+                    columns=["기준값", "변경열", "이전값", "새값"],
+                )
+                unchanged = pd.DataFrame({"기준값": unchanged_keys})
+
+                # Friendly key name in added/removed tables
+                if "__compare_key__" in added.columns:
+                    added = added.rename(columns={"__compare_key__": "비교기준값"})
+                if "__compare_key__" in removed.columns:
+                    removed = removed.rename(columns={"__compare_key__": "비교기준값"})
+
+                summary = pd.DataFrame({
+                    "구분": ["이전 파일 행", "새 파일 행", "추가된 항목", "삭제된 항목", "값이 변경된 기준값", "변경 없는 기준값"],
+                    "건수": [
+                        len(old_df),
+                        len(new_df),
+                        len(added_keys),
+                        len(removed_keys),
+                        changed["기준값"].nunique() if len(changed) else 0,
+                        len(unchanged_keys),
+                    ],
+                })
+
+                st.success("비교가 완료됐습니다.")
+                st.dataframe(summary, width="stretch")
+
+                t1, t2, t3 = st.tabs(["🆕 추가", "🗑️ 삭제", "✏️ 변경"])
+                with t1:
+                    st.dataframe(added, width="stretch")
+                with t2:
+                    st.dataframe(removed, width="stretch")
+                with t3:
+                    st.dataframe(changed, width="stretch")
+
+                xbytes = to_excel_bytes({
+                    "요약": summary,
+                    "추가": added,
+                    "삭제": removed,
+                    "변경": changed,
+                    "변경없음": unchanged,
+                })
+                st.download_button(
+                    "⬇️ 비교 결과 Excel 다운로드",
+                    xbytes,
+                    "두파일_차이비교_결과.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
+
+
+# -----------------------------
+# File Splitter
+# -----------------------------
+elif menu == "✂️ 파일 자동 분리기":
+    st.header("✂️ 파일 자동 분리기")
+    st.write("한 파일을 선택한 열의 값에 따라 여러 시트 또는 여러 Excel 파일로 자동 분리합니다.")
+
+    split_file = st.file_uploader(
+        "분리할 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="split_file",
+    )
+
+    if split_file:
+        sdf = flexible_loader(split_file, "splitter", "파일 구조")
+        if sdf is not None and len(sdf.columns):
+            scol = st.selectbox(
+                "어떤 열을 기준으로 나눌까요?",
+                list(sdf.columns),
+                key="split_column",
+            )
+            split_mode = st.radio(
+                "결과 형식",
+                ["Excel 한 파일 안에 여러 시트", "값별 Excel 파일을 ZIP으로 묶기"],
+                horizontal=True,
+            )
+            include_blank = st.checkbox(
+                "기준 열의 빈칸도 별도 그룹으로 포함",
+                value=False,
+            )
+
+            unique_values = sdf[scol].drop_duplicates()
+            if not include_blank:
+                unique_values = unique_values[~unique_values.isna()]
+                unique_values = unique_values[unique_values.astype(str).str.strip() != ""]
+
+            st.caption(f"현재 설정으로 최대 {len(unique_values)}개 그룹으로 나뉩니다.")
+
+            if len(unique_values) > 100:
+                st.warning("그룹이 100개를 넘습니다. 파일/시트가 너무 많이 생성될 수 있으니 기준 열을 확인해주세요.")
+
+            if st.button("✂️ 파일 분리 실행", type="primary", width="stretch"):
+                groups = {}
+                work = sdf.copy()
+                blank_label = "빈값"
+
+                if include_blank:
+                    group_series = work[scol].apply(
+                        lambda x: blank_label if pd.isna(x) or str(x).strip() == "" else str(x).strip()
+                    )
+                else:
+                    valid_mask = work[scol].notna() & (work[scol].astype(str).str.strip() != "")
+                    work = work[valid_mask].copy()
+                    group_series = work[scol].astype(str).str.strip()
+
+                for value in pd.unique(group_series):
+                    part = work[group_series == value].copy()
+                    groups[str(value)] = part
+
+                summary = pd.DataFrame(
+                    [{"그룹": k, "행 수": len(v)} for k, v in groups.items()]
+                ).sort_values("행 수", ascending=False, ignore_index=True)
+
+                st.success(f"{len(groups)}개 그룹으로 분리했습니다.")
+                st.dataframe(summary, width="stretch")
+
+                if split_mode == "Excel 한 파일 안에 여러 시트":
+                    sheets = {"분리요약": summary}
+                    for group_name, part in groups.items():
+                        sheets[group_name] = part
+                    xbytes = to_excel_bytes(sheets)
+                    st.download_button(
+                        "⬇️ 분리된 Excel 다운로드",
+                        xbytes,
+                        "자동분리_결과.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                    )
+                else:
+                    zip_buffer = io.BytesIO()
+                    used_names = set()
+                    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for group_name, part in groups.items():
+                            base = re.sub(r'[\\/:*?"<>|]+', "_", str(group_name)).strip(" .") or "빈값"
+                            base = base[:80]
+                            candidate = base
+                            n = 2
+                            while candidate.lower() in used_names:
+                                candidate = f"{base}_{n}"
+                                n += 1
+                            used_names.add(candidate.lower())
+                            file_data = to_excel_bytes({"데이터": part})
+                            zf.writestr(f"{candidate}.xlsx", file_data)
+
+                        zf.writestr(
+                            "분리요약.xlsx",
+                            to_excel_bytes({"분리요약": summary}),
+                        )
+                    zip_buffer.seek(0)
+                    st.download_button(
+                        "⬇️ 분리 파일 ZIP 다운로드",
+                        zip_buffer.getvalue(),
+                        "자동분리_결과.zip",
+                        mime="application/zip",
+                        width="stretch",
+                    )
+
+
+# -----------------------------
+# Multi-file Lookup
+# -----------------------------
+elif menu == "🔗 여러 파일 VLOOKUP/XLOOKUP":
+    st.header("🔗 여러 파일 VLOOKUP/XLOOKUP 자동화")
+    st.write("기준 파일 하나에 여러 참조 파일의 정보를 차례로 붙입니다. Excel 함수를 직접 작성할 필요가 없습니다.")
+
+    lookup_base = st.file_uploader(
+        "① 기준 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="multi_lookup_base",
+    )
+    lookup_refs = st.file_uploader(
+        "② 정보를 가져올 참조 파일들",
+        type=["xlsx", "xls", "csv"],
+        accept_multiple_files=True,
+        key="multi_lookup_refs",
+    )
+
+    if lookup_base and lookup_refs:
+        bdf = flexible_loader(lookup_base, "multi_lookup_base_loader", "기준 파일 구조")
+        if bdf is not None and len(bdf.columns):
+            bcols = list(bdf.columns)
+            bguess = auto_col(bdf, ["instagram", "인스타", "아이디", "id", "전화번호", "접수번호"], bcols[0])
+            base_key = st.selectbox(
+                "기준 파일의 매칭 열",
+                bcols,
+                index=option_index(bcols, bguess),
+            )
+
+            lookup_normalize = st.selectbox(
+                "매칭값 정리 방식",
+                ["공백만 정리", "Instagram ID 형식", "전화번호 숫자만"],
+            )
+            add_prefix = st.checkbox(
+                "가져온 열 이름 앞에 참조 파일명 붙이기",
+                value=True,
+                help="같은 이름의 열이 여러 참조 파일에 있을 때 덮어쓰는 것을 방지합니다.",
+            )
+
+            ref_configs = []
+            st.markdown("### 참조 파일별 설정")
+
+            for i, rf in enumerate(lookup_refs):
+                with st.expander(f"📄 {rf.name}", expanded=(i == 0)):
+                    rdf = flexible_loader(rf, f"multi_lookup_ref_{i}", "참조 파일 구조")
+                    if rdf is not None and len(rdf.columns):
+                        rcols = list(rdf.columns)
+                        rguess = auto_col(rdf, ["instagram", "인스타", "아이디", "id", "전화번호", "접수번호"], rcols[0])
+                        rkey = st.selectbox(
+                            "참조 파일 매칭 열",
+                            rcols,
+                            index=option_index(rcols, rguess),
+                            key=f"multi_lookup_key_{i}",
+                        )
+                        rfields = st.multiselect(
+                            "가져올 열",
+                            [c for c in rcols if c != rkey],
+                            default=[c for c in rcols if c != rkey][:5],
+                            key=f"multi_lookup_fields_{i}",
+                        )
+                        ref_configs.append((i, rf.name, rdf, rkey, rfields))
+
+            if st.button("🔗 여러 파일 매칭 실행", type="primary", width="stretch"):
+                result = bdf.copy()
+                match_summary = []
+
+                def make_lookup_key(series):
+                    if lookup_normalize == "Instagram ID 형식":
+                        return series.map(normalize_instagram_id)
+                    if lookup_normalize == "전화번호 숫자만":
+                        return series.map(lambda x: normalize_phone(x, "digits"))
+                    return series.map(normalize_text)
+
+                internal_key = "__multi_lookup_key__"
+                result[internal_key] = make_lookup_key(result[base_key])
+
+                for i, ref_name, rdf, rkey, rfields in ref_configs:
+                    if not rfields:
+                        match_summary.append({
+                            "참조 파일": ref_name,
+                            "가져온 열": 0,
+                            "기준값 중복": 0,
+                            "매칭된 행": 0,
+                        })
+                        continue
+
+                    R = rdf.copy()
+                    R[internal_key] = make_lookup_key(R[rkey])
+                    R = R[R[internal_key] != ""].copy()
+
+                    dup_count = int(R.duplicated(internal_key, keep=False).sum())
+                    R = R.drop_duplicates(internal_key, keep="first")
+
+                    stem = Path(ref_name).stem
+                    rename_map = {}
+                    for field in rfields:
+                        if add_prefix:
+                            rename_map[field] = f"{stem}_{field}"
+                        elif field in result.columns:
+                            rename_map[field] = f"{field}_{i+1}"
+                        else:
+                            rename_map[field] = field
+
+                    Rsmall = R[[internal_key] + rfields].rename(columns=rename_map)
+                    before_cols = set(result.columns)
+                    result = result.merge(Rsmall, on=internal_key, how="left")
+
+                    added_cols = [c for c in result.columns if c not in before_cols]
+                    if added_cols:
+                        matched_mask = result[added_cols].notna().any(axis=1)
+                        matched_count = int(matched_mask.sum())
+                    else:
+                        matched_count = 0
+
+                    match_summary.append({
+                        "참조 파일": ref_name,
+                        "가져온 열": len(rfields),
+                        "기준값 중복": dup_count,
+                        "매칭된 행": matched_count,
+                    })
+
+                result = result.drop(columns=[internal_key])
+                summary = pd.DataFrame(match_summary)
+
+                st.success("여러 파일 매칭이 완료됐습니다.")
+                st.dataframe(summary, width="stretch")
+                st.dataframe(result.head(100), width="stretch")
+
+                xbytes = to_excel_bytes({
+                    "매칭결과": result,
+                    "매칭요약": summary,
+                })
+                st.download_button(
+                    "⬇️ 매칭 결과 Excel 다운로드",
+                    xbytes,
+                    "여러파일_매칭결과.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch",
+                )
+
+
+# -----------------------------
+# Submission File Generator
+# -----------------------------
+elif menu == "📦 제출용 파일 자동 생성기":
+    st.header("📦 제출용 파일 자동 생성기")
+    st.write("내부 작업 파일에서 필요한 열만 골라 정리하고, 중복·빈 행 등을 제거한 제출용 Excel을 만듭니다.")
+
+    submit_file = st.file_uploader(
+        "원본 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="submission_file",
+    )
+
+    if submit_file:
+        fdf = flexible_loader(submit_file, "submission_loader", "원본 파일 구조")
+        if fdf is not None and len(fdf.columns):
+            cols = list(fdf.columns)
+            keep_cols = st.multiselect(
+                "제출 파일에 포함할 열",
+                cols,
+                default=cols,
+                help="선택한 순서대로 결과 파일에 들어갑니다.",
+            )
+
+            rename_text = st.text_area(
+                "열 이름 변경 (선택)",
+                placeholder="예:\n인스타그램ID=Instagram ID\n개인정보동의=동의여부",
+                help="한 줄에 '기존열=새열' 형식으로 입력하세요.",
+            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                remove_blank_rows = st.checkbox("완전히 빈 행 제거", value=True)
+                strip_text = st.checkbox("텍스트 앞뒤 공백 정리", value=True)
+                duplicate_cols = st.multiselect(
+                    "중복 제거 기준 열 (선택)",
+                    keep_cols,
+                )
+            with c2:
+                sort_col = st.selectbox(
+                    "정렬 기준 열 (선택)",
+                    ["선택 안 함"] + keep_cols,
+                )
+                sort_order = st.radio(
+                    "정렬 방향",
+                    ["오름차순", "내림차순"],
+                    horizontal=True,
+                )
+
+            filter_col = st.selectbox(
+                "특정 값만 제출할 열 (선택)",
+                ["선택 안 함"] + keep_cols,
+                help="예: 유효응답 열에서 O인 행만 제출할 때 사용합니다.",
+            )
+            filter_values = ""
+            if filter_col != "선택 안 함":
+                filter_values = st.text_input(
+                    "포함할 값",
+                    placeholder="예: O,유효,동의",
+                    help="쉼표(,)로 여러 값을 입력할 수 있습니다.",
+                )
+
+            output_name = st.text_input(
+                "결과 파일명",
+                value="제출용_파일.xlsx",
+            )
+            output_sheet = st.text_input(
+                "결과 시트명",
+                value="제출용",
+            )
+
+            if st.button("📦 제출용 파일 만들기", type="primary", width="stretch"):
+                if not keep_cols:
+                    st.error("제출 파일에 포함할 열을 하나 이상 선택해주세요.")
+                else:
+                    out = fdf[keep_cols].copy()
+                    original_count = len(out)
+
+                    if strip_text:
+                        for c in out.columns:
+                            if pd.api.types.is_object_dtype(out[c]) or pd.api.types.is_string_dtype(out[c]):
+                                out[c] = out[c].map(lambda x: x.strip() if isinstance(x, str) else x)
+
+                    if remove_blank_rows:
+                        out = out.dropna(how="all")
+
+                    if filter_col != "선택 안 함" and filter_values.strip():
+                        allowed = {x.strip().lower() for x in filter_values.split(",") if x.strip()}
+                        out = out[
+                            out[filter_col].astype(str).str.strip().str.lower().isin(allowed)
+                        ]
+
+                    before_dedupe = len(out)
+                    if duplicate_cols:
+                        out = out.drop_duplicates(subset=duplicate_cols, keep="first")
+
+                    if sort_col != "선택 안 함":
+                        out = out.sort_values(
+                            by=sort_col,
+                            ascending=(sort_order == "오름차순"),
+                            na_position="last",
+                        )
+
+                    rename_map = {}
+                    invalid_renames = []
+                    for line in rename_text.splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if "=" not in line:
+                            invalid_renames.append(line)
+                            continue
+                        old, new = line.split("=", 1)
+                        old = old.strip()
+                        new = new.strip()
+                        if old in out.columns and new:
+                            rename_map[old] = new
+                        else:
+                            invalid_renames.append(line)
+
+                    if rename_map:
+                        out = out.rename(columns=rename_map)
+
+                    out = out.reset_index(drop=True)
+
+                    summary = pd.DataFrame({
+                        "항목": ["원본 행 수", "필터/빈행 정리 후", "중복 제거 건수", "최종 제출 행 수", "최종 열 수"],
+                        "값": [
+                            original_count,
+                            before_dedupe,
+                            before_dedupe - len(out),
+                            len(out),
+                            len(out.columns),
+                        ],
+                    })
+
+                    st.success(f"제출용 파일을 만들었습니다: {len(out):,}행 × {len(out.columns)}열")
+                    st.dataframe(summary, width="stretch")
+                    st.dataframe(out.head(100), width="stretch")
+
+                    if invalid_renames:
+                        st.warning("적용하지 못한 열 이름 변경 항목: " + ", ".join(invalid_renames))
+
+                    safe_sheet = output_sheet.strip() or "제출용"
+                    xbytes = to_excel_bytes({
+                        safe_sheet: out,
+                        "제작요약": summary,
+                    })
+
+                    final_name = output_name.strip() or "제출용_파일.xlsx"
+                    if not final_name.lower().endswith(".xlsx"):
+                        final_name += ".xlsx"
+
+                    st.download_button(
+                        "⬇️ 제출용 Excel 다운로드",
+                        xbytes,
+                        final_name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width="stretch",
+                    )
+
+
+# -----------------------------
+# Pivot Summary Generator
+# -----------------------------
+elif menu == "📈 피벗 요약 자동 생성기":
+    st.header("📈 피벗 요약 자동 생성기")
+    st.write("원본 데이터를 선택한 기준으로 집계해 피벗 요약표와 비율표를 자동 생성합니다.")
+
+    pivot_file = st.file_uploader(
+        "요약할 파일 업로드",
+        type=["xlsx", "xls", "csv"],
+        key="pivot_file",
+    )
+
+    if pivot_file:
+        pdf2 = flexible_loader(pivot_file, "pivot_loader", "파일 구조")
+        if pdf2 is not None and len(pdf2.columns):
+            pcols = list(pdf2.columns)
+
+            row_fields = st.multiselect(
+                "행 기준",
+                pcols,
+                default=[pcols[0]],
+                help="예: 성별, 국가, 응답유형 등",
+            )
+            col_field = st.selectbox(
+                "열 기준 (선택)",
+                ["선택 안 함"] + pcols,
+                help="예: 성별을 행, 유효응답을 열로 두고 교차표를 만들 수 있습니다.",
+            )
+            agg_method = st.selectbox(
+                "집계 방식",
+                ["개수", "고유값 개수", "합계", "평균"],
+            )
+
+            value_col = "선택 안 함"
+            if agg_method != "개수":
+                value_col = st.selectbox(
+                    "집계할 값 열",
+                    pcols,
+                    help="고유값 개수/합계/평균을 계산할 열입니다.",
+                )
+
+            add_percentage = st.checkbox(
+                "전체 대비 비율표도 만들기",
+                value=True,
+            )
+
+            if st.button("📈 피벗 요약 만들기", type="primary", width="stretch"):
+                if not row_fields:
+                    st.error("행 기준을 하나 이상 선택해주세요.")
+                else:
+                    try:
+                        work = pdf2.copy()
+
+                        if agg_method in {"합계", "평균"}:
+                            work[value_col] = pd.to_numeric(work[value_col], errors="coerce")
+
+                        columns_arg = None if col_field == "선택 안 함" else [col_field]
+
+                        if agg_method == "개수":
+                            pivot = pd.pivot_table(
+                                work,
+                                index=row_fields,
+                                columns=columns_arg,
+                                aggfunc="size",
+                                fill_value=0,
+                                dropna=False,
+                            )
+                        elif agg_method == "고유값 개수":
+                            pivot = pd.pivot_table(
+                                work,
+                                index=row_fields,
+                                columns=columns_arg,
+                                values=value_col,
+                                aggfunc=pd.Series.nunique,
+                                fill_value=0,
+                                dropna=False,
+                            )
+                        elif agg_method == "합계":
+                            pivot = pd.pivot_table(
+                                work,
+                                index=row_fields,
+                                columns=columns_arg,
+                                values=value_col,
+                                aggfunc="sum",
+                                fill_value=0,
+                                dropna=False,
+                            )
+                        else:
+                            pivot = pd.pivot_table(
+                                work,
+                                index=row_fields,
+                                columns=columns_arg,
+                                values=value_col,
+                                aggfunc="mean",
+                                fill_value=0,
+                                dropna=False,
+                            )
+
+                        # Convert Series result to DataFrame, then flatten column names for Excel.
+                        if isinstance(pivot, pd.Series):
+                            pivot = pivot.to_frame("값")
+
+                        pivot = pivot.reset_index()
+                        if isinstance(pivot.columns, pd.MultiIndex):
+                            pivot.columns = [
+                                " | ".join([str(x) for x in col if str(x) not in ("", "None")]).strip(" |")
+                                for col in pivot.columns.to_flat_index()
+                            ]
+                        else:
+                            pivot.columns = [str(c) for c in pivot.columns]
+
+                        sheets = {"피벗요약": pivot}
+
+                        st.success("피벗 요약을 만들었습니다.")
+                        st.dataframe(pivot, width="stretch")
+
+                        if add_percentage:
+                            numeric_cols = [
+                                c for c in pivot.columns
+                                if c not in row_fields and pd.api.types.is_numeric_dtype(pivot[c])
+                            ]
+                            percentage = pivot.copy()
+                            total_numeric = sum(
+                                pd.to_numeric(percentage[c], errors="coerce").fillna(0).sum()
+                                for c in numeric_cols
+                            )
+
+                            if numeric_cols and total_numeric != 0:
+                                for c in numeric_cols:
+                                    percentage[c] = (
+                                        pd.to_numeric(percentage[c], errors="coerce").fillna(0)
+                                        / total_numeric
+                                        * 100
+                                    ).round(1)
+                                sheets["전체대비비율"] = percentage
+                                st.markdown("#### 전체 대비 비율(%)")
+                                st.dataframe(percentage, width="stretch")
+                            else:
+                                st.info("비율을 계산할 숫자 집계값이 없습니다.")
+
+                        xbytes = to_excel_bytes(sheets)
+                        st.download_button(
+                            "⬇️ 피벗 요약 Excel 다운로드",
+                            xbytes,
+                            "피벗_요약결과.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            width="stretch",
+                        )
+                    except Exception as e:
+                        st.error(f"피벗 요약을 만들지 못했습니다: {e}")
+                        st.caption("합계/평균을 선택했다면 숫자로 변환 가능한 열인지 확인해주세요.")
 
 
 # -----------------------------

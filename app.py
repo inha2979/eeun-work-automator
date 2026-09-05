@@ -500,7 +500,6 @@ elif menu == "✅ 파일 납품 전 체크기":
             row_issues["문제내용"] = ""
 
             def add_row_issue(mask, msg):
-                nonlocal row_issues
                 if mask.any():
                     idxs = row_issues.index[mask]
                     for idx in idxs:

@@ -509,28 +509,61 @@ else:
             consent_guess = auto_col(pdf, ["개인정보", "동의", "consent"])
             valid_guess = auto_col(pdf, ["유효응답", "유효", "검증", "자격", "valid", "eligible"])
 
+            st.markdown("### 추첨 조건 설정")
+            st.caption("아래에서 어떤 참여자를 추첨 대상에 포함할지 정합니다. 필요 없는 조건은 '선택 안 함'으로 두면 됩니다.")
+
             c1, c2, c3 = st.columns(3)
             with c1:
-                dedupe = st.checkbox("중복 ID 제외", value=True)
+                dedupe = st.checkbox(
+                    "중복 Instagram ID 제외",
+                    value=True,
+                    help="같은 Instagram ID가 여러 번 참여했을 경우 한 명으로 처리합니다.",
+                )
                 consent_options = ["선택 안 함"] + pcols
                 consent_col = st.selectbox(
-                    "개인정보 동의 열",
+                    "개인정보 동의 여부가 적힌 열",
                     consent_options,
                     index=option_index(consent_options, consent_guess),
+                    help="예: 개인정보동의, 개인정보 수집동의. 개인정보 동의를 추첨 조건으로 사용하지 않으면 '선택 안 함'을 고르세요.",
                 )
-                consent_values = st.text_input("포함할 동의 값", value="동의,O,예,Y,TRUE")
+                consent_values = st.text_input(
+                    "동의한 것으로 인정할 값",
+                    value="동의,O,예,Y,TRUE",
+                    help="선택한 열에서 이 값에 해당하는 사람만 추첨 대상에 포함합니다. 여러 값은 쉼표(,)로 구분하세요.",
+                )
             with c2:
                 valid_options = ["선택 안 함"] + pcols
                 valid_col = st.selectbox(
-                    "추첨 자격/검증 열",
+                    "추첨 가능 여부가 적힌 열",
                     valid_options,
                     index=option_index(valid_options, valid_guess),
+                    help="예: 유효응답, 참여조건충족, 검증결과. 별도의 자격 조건이 없으면 '선택 안 함'을 고르세요.",
                 )
-                valid_values = st.text_input("포함할 자격 값", value="O,예,Y,TRUE,유효")
-                winner_count = st.number_input("당첨자 수", min_value=1, value=50, step=1)
+                valid_values = st.text_input(
+                    "추첨 가능으로 인정할 값",
+                    value="O,예,Y,TRUE,유효",
+                    help="선택한 열에서 이 값에 해당하는 사람만 추첨 대상에 포함합니다. 여러 값은 쉼표(,)로 구분하세요.",
+                )
+                winner_count = st.number_input(
+                    "최종 당첨 인원",
+                    min_value=1,
+                    value=50,
+                    step=1,
+                    help="실제로 최종 당첨자로 선정할 인원입니다.",
+                )
             with c3:
-                reserve_count = st.number_input("예비 당첨자 수", min_value=0, value=10, step=1)
-                seed_text = st.text_input("재현용 Seed 문구 (선택)", placeholder="예: momntalk-2026-09")
+                reserve_count = st.number_input(
+                    "예비 당첨 인원",
+                    min_value=0,
+                    value=10,
+                    step=1,
+                    help="최종 당첨자가 조건을 충족하지 못하거나 연락이 되지 않을 때 사용할 예비 인원입니다.",
+                )
+                seed_text = st.text_input(
+                    "같은 추첨 결과를 다시 만들기 위한 기준값 (선택)",
+                    placeholder="예: momntalk-2026-09",
+                    help="같은 데이터와 같은 문구로 다시 실행하면 동일한 무작위 추첨 결과를 재현할 수 있습니다. 비워두어도 됩니다.",
+                )
 
             follower_ids = None
             follower_df = None
@@ -571,8 +604,16 @@ else:
                 manual_follow_mode = follow_mode.startswith("선추첨")
                 if manual_follow_mode:
                     extra_candidates = st.number_input(
-                        "추가 검증 후보 수", min_value=0, value=max(50, int(winner_count)), step=10,
-                        help="당첨자+예비당첨자 외에 팔로우 X가 나올 때를 대비한 추가 후보입니다.",
+                        "추가 검증 후보 수",
+                        min_value=0,
+                        value=max(10, int(winner_count)),
+                        step=1,
+                        help="팔로워 파일이 없을 때 비팔로워가 나올 경우를 대비해, 당첨자와 예비 당첨자 외에 추가로 확인할 후보 수입니다.",
+                    )
+                    total_verify = int(winner_count) + int(reserve_count) + int(extra_candidates)
+                    st.info(
+                        f"현재 설정: 최종 당첨 {int(winner_count)}명 + 예비 {int(reserve_count)}명 "
+                        f"+ 추가 검증 {int(extra_candidates)}명 = 최대 {total_verify}명을 먼저 뽑아 팔로우 여부를 확인합니다."
                     )
                     verified_follow_file = st.file_uploader(
                         "④ O/X 확인을 끝낸 검증 파일 다시 업로드 (최종 확정용)",

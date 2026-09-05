@@ -165,7 +165,7 @@ st.caption("반복적인 이벤트/엑셀 업무를 빠르게 정리하는 로�
 
 menu = st.sidebar.radio(
     "메뉴",
-    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "🎁 Event Lottery"],
+    ["🧹 Excel Cleaner", "🔗 Excel Matcher", "🧾 정책 중복 검사", "📚 이은북 카드뉴스 기획안", "🎁 Event Lottery"],
 )
 
 
@@ -485,6 +485,103 @@ elif menu == "🧾 정책 중복 검사":
                         "검사설정": settings,
                     })
                     st.download_button("📥 policy_duplicate_result.xlsx", xbytes, "policy_duplicate_result.xlsx")
+
+
+# -----------------------------
+# Eeunbook Card News Prompt
+# -----------------------------
+elif menu == "📚 이은북 카드뉴스 기획안":
+    st.header("📚 이은북 카드뉴스 기획안")
+    st.write("도서 정보를 입력하면 ChatGPT에 그대로 붙여넣을 수 있는 카드뉴스 기획 프롬프트를 만들어줍니다.")
+    st.info("이 기능은 AI API를 직접 호출하지 않습니다. 여기서는 프롬프트만 만들고, 완성된 내용을 본인의 ChatGPT에 붙여넣어 사용합니다.")
+
+    book_title = st.text_input("도서명", placeholder="예: AI 광고 콘텐츠 제작법")
+    book_intro = st.text_area(
+        "책 소개 / 참고 원문",
+        height=280,
+        placeholder="출판사 책 소개, 상세페이지 내용, 보도자료 등 카드뉴스 기획에 참고할 내용을 붙여넣으세요.",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        card_count = st.number_input("카드 수", min_value=4, max_value=15, value=7, step=1,
+                                     help="표지와 마지막 마무리 페이지를 포함한 전체 카드 수입니다.")
+        target_reader = st.text_input("주요 타깃 독자 (선택)", placeholder="예: AI 활용에 관심 있는 마케터·기획자")
+    with c2:
+        tone = st.selectbox("톤", ["깔끔한 정보형", "흥미 유도형", "친근한 소개형", "전문적인 소개형"])
+        emphasis = st.text_area("특히 강조할 내용 (선택)", height=100,
+                                placeholder="예: 실무에서 바로 따라 할 수 있다는 점")
+
+    extra_request = st.text_area("추가 요청사항 (선택)", height=90,
+                                 placeholder="예: 2P는 질문형으로 시작 / 저자 소개는 제외")
+
+    if st.button("✨ ChatGPT용 프롬프트 만들기", type="primary", width="stretch"):
+        if not book_title.strip():
+            st.error("도서명을 입력해주세요.")
+        elif not book_intro.strip():
+            st.error("책 소개 / 참고 원문을 입력해주세요.")
+        else:
+            target_text = target_reader.strip() or "제공된 자료를 바탕으로 가장 적절한 핵심 독자를 판단"
+            emphasis_text = emphasis.strip() or "제공된 자료에서 가장 중요한 도서의 차별점과 독자 효용을 판단"
+            extra_text = extra_request.strip() or "없음"
+
+            prompt = f"""당신은 출판사 이은북의 SNS 카드뉴스를 기획하는 콘텐츠 기획자입니다.
+
+아래 도서 자료를 바탕으로 총 {int(card_count)}장의 도서 소개 카드뉴스 기획안을 작성해주세요.
+
+[도서명]
+{book_title.strip()}
+
+[주요 타깃 독자]
+{target_text}
+
+[원하는 톤]
+{tone}
+
+[특히 강조할 내용]
+{emphasis_text}
+
+[추가 요청사항]
+{extra_text}
+
+[책 소개 / 참고 원문]
+{book_intro.strip()}
+
+[작성 원칙]
+- 반드시 제공된 자료를 근거로 작성하고, 자료에 없는 사실·수치·저자 정보·책의 내용을 임의로 만들지 마세요.
+- 단순히 책 소개를 잘게 나누지 말고 처음부터 끝까지 하나의 카드뉴스로 자연스럽게 읽히는 흐름을 설계하세요.
+- 1P는 표지입니다. 책의 핵심 매력을 짧고 강하게 보여주는 헤드카피를 제안하세요.
+- 초반에는 독자의 고민이나 관심사와 책을 연결해 흥미를 유도하세요.
+- 중간에는 책의 핵심 내용과 차별점을 여러 포인트로 나누어 전달하세요.
+- 마지막 페이지는 도서명과 핵심 메시지를 다시 연결해 자연스럽게 마무리하세요.
+- 실제 카드에 들어갈 문장은 짧고 직관적으로 작성하세요.
+- 과도한 광고 문구, 근거 없는 최상급 표현, 뻔한 AI식 표현은 피하세요.
+- 페이지마다 같은 표현과 메시지를 반복하지 마세요.
+- 자연스러운 한국어를 사용하세요.
+
+[출력 형식]
+먼저 전체 기획 의도를 2~3문장으로 설명해주세요.
+
+그 다음 1P부터 {int(card_count)}P까지 각 페이지를 아래 형식으로 작성해주세요.
+- 페이지 역할:
+- 헤드카피:
+- 본문:
+- 이미지/디자인 방향:
+
+마지막으로 아래 항목도 작성해주세요.
+- 전체 카드뉴스 흐름 요약:
+- 제작 시 주의할 점:
+"""
+
+            st.success("완성됐습니다. 아래 프롬프트를 전체 복사해서 ChatGPT에 붙여넣으면 됩니다.")
+            st.text_area("완성된 ChatGPT 프롬프트", value=prompt, height=600)
+            st.download_button(
+                "📄 프롬프트 TXT로 저장",
+                data=prompt.encode("utf-8"),
+                file_name=f"{book_title.strip()}_카드뉴스_기획_프롬프트.txt",
+                mime="text/plain",
+                width="stretch",
+            )
 
 
 # -----------------------------

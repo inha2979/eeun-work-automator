@@ -51,7 +51,7 @@ def normalize_phone(value, output_format="digits"):
 
 
 def to_excel_bytes(sheets):
-    output = io.BytesIO()
+    output = io.io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, df in sheets.items():
             safe = re.sub(r"[\\/*?:\[\]]", "_", name)[:31]
@@ -410,7 +410,7 @@ elif menu == "📚 다중 엑셀 통합기":
                     for err in errors:
                         st.write(f"- {err}")
 
-                output = BytesIO()
+                output = io.BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
                     merged.to_excel(writer, index=False, sheet_name="통합결과")
                     pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="통합요약")
@@ -578,7 +578,7 @@ elif menu == "✅ 파일 납품 전 체크기":
             else:
                 st.info("행 단위로 확인할 문제는 없습니다.")
 
-            output = BytesIO()
+            output = io.BytesIO()
             with pd.ExcelWriter(output, engine="openpyxl") as writer:
                 result_df.to_excel(writer, index=False, sheet_name="검수결과")
                 pd.DataFrame(issues, columns=["검사항목", "결과"]).to_excel(

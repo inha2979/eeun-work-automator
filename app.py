@@ -558,15 +558,27 @@ else:
                     wkey = st.selectbox("과거 당첨자 ID 열", wcols, index=option_index(wcols, wguess))
                     past_winner_ids = set(wdf[wkey].map(normalize_instagram_id)) - {""}
 
+            manual_follow_mode = False
+            verified_follow_file = None
+            extra_candidates = 50
             if not followers_file:
-                st.info("팔로워 파일이 없으면 팔로우 여부 필터는 건너뜁니다. 아래 검증용 ID 목록을 내려받아 O/X 확인 후 다시 사용할 수 있습니다.")
-                unique_ids = pd.DataFrame({"instagram_id": sorted(set(pdf[id_col].map(normalize_instagram_id)) - {""})})
-                unique_ids["팔로우확인"] = ""
-                st.download_button(
-                    "📋 팔로우 수동검증용 목록 다운로드",
-                    to_excel_bytes({"follow_check": unique_ids}),
-                    "follow_check_list.xlsx",
+                st.warning("팔로워 파일이 없어도 진행할 수 있습니다. 전체 참여자를 확인하지 않고, 먼저 후보 순번을 만든 뒤 그 후보만 Instagram에서 O/X 확인하는 방식을 권장합니다.")
+                follow_mode = st.radio(
+                    "팔로워 파일이 없을 때 처리 방식",
+                    ["선추첨 → 후보만 수동검증 (권장)", "팔로우 조건 없이 추첨"],
+                    horizontal=True,
                 )
+                manual_follow_mode = follow_mode.startswith("선추첨")
+                if manual_follow_mode:
+                    extra_candidates = st.number_input(
+                        "추가 검증 후보 수", min_value=0, value=max(50, int(winner_count)), step=10,
+                        help="당첨자+예비당첨자 외에 팔로우 X가 나올 때를 대비한 추가 후보입니다.",
+                    )
+                    verified_follow_file = st.file_uploader(
+                        "④ O/X 확인을 끝낸 검증 파일 다시 업로드 (최종 확정용)",
+                        type=["xlsx", "xls", "csv"], key="verified_follow",
+                    )
+                    st.caption("1차로 후보 파일을 만든 뒤, `팔로우확인` 열에 O/X를 입력해 이곳에 다시 올리면 순번대로 최종 당첨자를 확정합니다.")
 
             if st.button("추첨 실행", type="primary"):
                 work = pdf.copy()
@@ -631,6 +643,58 @@ else:
                 parts = [f"{row['단계']} {int(row['제외'])}명" for _, row in excluded_counts.iterrows() if int(row["제외"]) > 0]
                 report_sentence = f"총 {len(pdf)}명의 참여자 중 " + (", ".join(parts) + "을/를 제외해 " if parts else "") + f"최종 {eligible_n}명을 대상으로 추첨했습니다."
                 st.text_area("보고용 문장", report_sentence, height=90)
+
+                # 팔로워 파일이 없을 때: 후보를 먼저 순번화하고, 확인된 O/X 파일로 최종 확정
+                if not followers_file and manual_follow_mode:
+                    seed = lottery_seed(seed_text)
+                    candidate_n = min(eligible_n, total_needed + int(extra_candidates))
+                    if candidate_n < total_needed:
+                        st.error(f"기본 조건을 통과한 후보가 {eligible_n}명뿐이라 당첨자+예비 {total_needed}명을 확보할 수 없습니다.")
+                    else:
+                        ranked = work.sample(n=candidate_n, random_state=seed).copy().reset_index(drop=True)
+                        ranked.insert(0, "검증순번", range(1, len(ranked) + 1))
+                        ranked["팔로우확인"] = ""
+                        ranked = ranked.drop(columns=["__id"])
+                        st.info(f"팔로우 확인이 필요한 후보 {candidate_n}명만 뽑았습니다. 아래 파일에서 Instagram 팔로우 여부를 O/X로 확인하세요.")
+                        st.dataframe(ranked.head(30), width="stretch")
+                        st.download_button(
+                            "📋 1차 팔로우 검증 후보.xlsx 다운로드",
+                            to_excel_bytes({"팔로우검증후보": ranked, "추첨과정": summary}),
+                            "follow_verification_candidates.xlsx",
+                        )
+
+                    if verified_follow_file is not None:
+                        checked = read_table(verified_follow_file, header_row=0)
+                        if "팔로우확인" not in checked.columns:
+                            st.error("업로드한 검증 파일에 `팔로우확인` 열이 없습니다. 1차 후보 파일을 사용해 O/X를 입력해주세요.")
+                        else:
+                            if "검증순번" in checked.columns:
+                                checked = checked.sort_values("검증순번")
+                            ok_values = {"o", "y", "yes", "true", "팔로우", "확인", "1"}
+                            confirmed = checked[checked["팔로우확인"].astype(str).str.strip().str.lower().isin(ok_values)].copy()
+                            need = int(winner_count + reserve_count)
+                            if len(confirmed) < need:
+                                st.warning(f"팔로워로 확인된 후보가 {len(confirmed)}명입니다. 필요한 {need}명보다 {need-len(confirmed)}명 부족합니다. 추가 후보를 생성해 더 확인해주세요.")
+                            else:
+                                final_winners = confirmed.iloc[:int(winner_count)].copy()
+                                final_reserves = confirmed.iloc[int(winner_count):need].copy()
+                                st.success(f"팔로우 검증 완료 — 당첨자 {len(final_winners)}명 / 예비 {len(final_reserves)}명 확정")
+                                st.subheader("최종 당첨자")
+                                st.dataframe(final_winners, width="stretch")
+                                st.subheader("최종 예비 당첨자")
+                                st.dataframe(final_reserves, width="stretch")
+                                st.download_button(
+                                    "📥 팔로우 검증 최종 결과.xlsx",
+                                    to_excel_bytes({
+                                        "최종당첨자": final_winners,
+                                        "최종예비당첨자": final_reserves,
+                                        "검증전체": checked,
+                                        "팔로워확인": confirmed,
+                                        "추첨과정": summary,
+                                    }),
+                                    "lottery_verified_result.xlsx",
+                                )
+                    st.stop()
 
                 if eligible_n < total_needed:
                     st.error(

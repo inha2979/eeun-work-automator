@@ -673,21 +673,58 @@ elif menu == "✉️ 업무 보고/메일 생성기":
         elif not done:
             st.error("완료한 내용을 입력해주세요.")
         else:
-            # Normalize ending punctuation lightly
-            def end_sentence(s):
-                s = s.strip()
+            # 입력문을 그대로 붙이지 않고, 보고/메일체로 다듬기 위한 간단한 규칙
+            import re
+
+            def clean_fragment(s):
+                s = (s or "").strip()
+                s = re.sub(r"\s+", " ", s)
+                return s.rstrip(".!?")
+
+            def polite_sentence(s, mode="done"):
+                s = clean_fragment(s)
                 if not s:
                     return ""
-                return s if s[-1] in ".!?요다" else s + "."
 
-            done_s = end_sentence(done)
-            remain_s = end_sentence(remain)
-            req_s = end_sentence(req)
+                replacements = [
+                    (r"\b함$", "했습니다"),
+                    (r"\b완료함$", "완료했습니다"),
+                    (r"\b진행함$", "진행했습니다"),
+                    (r"\b전달함$", "전달드렸습니다"),
+                    (r"\b보냄$", "전달드렸습니다"),
+                    (r"\b확인함$", "확인했습니다"),
+                    (r"\b정리함$", "정리했습니다"),
+                    (r"\b추첨 함$", "추첨했습니다"),
+                    (r"\b추첨함$", "추첨했습니다"),
+                    (r"\b제거함$", "제외했습니다"),
+                    (r"\b제외함$", "제외했습니다"),
+                    (r"\b예정임$", "예정입니다"),
+                    (r"\b해야함$", "진행할 예정입니다"),
+                ]
+                for pat, repl in replacements:
+                    s = re.sub(pat, repl, s)
+
+                # 짧은 메모체를 자연스러운 보고체로 보정
+                if not re.search(r"(습니다|드립니다|했습니다|입니다|예정입니다|부탁드립니다)$", s):
+                    if mode == "request":
+                        s = s + " 확인 부탁드립니다"
+                    elif mode == "remain":
+                        s = s + " 진행할 예정입니다"
+                    else:
+                        s = s + " 진행했습니다"
+
+                return s + "."
+
+            done_s = polite_sentence(done, "done")
+            remain_s = polite_sentence(remain, "remain")
+            req_s = polite_sentence(req, "request") if req else ""
 
             if tone == "아주 짧게":
-                intro_done = f"{task} 관련하여 {done_s}"
+                intro_done = done_s
             elif tone == "진행상황 중심":
-                intro_done = f"{task} 진행 상황 공유드립니다.\n\n현재 {done_s}"
+                intro_done = f"{task} 진행 상황 공유드립니다.\n\n{done_s}"
+            elif tone == "조금 더 부드럽게":
+                intro_done = f"{task} 관련하여 진행한 내용 전달드립니다.\n\n{done_s}"
             else:
                 intro_done = f"{task} 관련하여 {done_s}"
 
